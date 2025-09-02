@@ -1,0 +1,4 @@
+fields:
+  - id: title
+    label: Título
+    type: string
