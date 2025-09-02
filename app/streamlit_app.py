@@ -8,6 +8,7 @@ import streamlit as st
 import io, re, time
 import pdfplumber
 import pandas as pd
+import json
 
 EN_STOP = {
     "the","a","an","of","and","or","to","for","with","in","on","as","is","are","was","were",
@@ -462,6 +463,35 @@ if st.session_state.stage == "step3":
                 row[f"RQ{i}"] = answers[i-1] if i-1 < len(answers) else ""
 
             st.session_state.extracted_rows.append(row)
+            st.markdown("### 🧠 Extraction result for this PDF")
+
+            # Tabela por RQ da extração atual
+            res_df = pd.DataFrame({
+                "RQ": [f"RQ{i+1}: {rq}" for i, rq in enumerate(st.session_state.rqs)],
+                "Answer": [answers[i] if i < len(answers) else "" for i in range(len(st.session_state.rqs))]
+            })
+            st.dataframe(res_df, use_container_width=True)
+
+            # JSON desta extração (útil para copiar/baixar)
+            single_result = {
+                "filename": f.name,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "answers": {f"RQ{i+1}": (answers[i] if i < len(answers) else "") for i in range(len(st.session_state.rqs))}
+            }
+
+            # Botão para baixar somente este resultado em JSON
+            st.download_button(
+                label="📥 Download this result (JSON)",
+                data=json.dumps(single_result, ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name=f"extraction_{int(time.time())}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+
+            # (Opcional) Mostrar um trecho do texto do artigo para referência rápida
+            with st.expander("📝 Show a short snippet of the article text"):
+                snippet = text[:1200]
+                st.text(snippet)
             st.success("✅ Extração concluída e adicionada à tabela!")
 
             # após extrair, oferecer botão para extrair outro PDF (reseta o uploader)
