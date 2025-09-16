@@ -1,5 +1,13 @@
 # app/streamlit_app.py
+# --- ensure project root is on sys.path ---
+import sys, pathlib
+ROOT = pathlib.Path(__file__).resolve().parents[1]  # .../poc_extrator_pdf
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+# ------------------------------------------
 import streamlit as st
+from app.extractors import make_extractor
+from app.utils.pdf_loader import extract_text_from_pdf
 
 # ==============================
 # Helpers da Etapa 3 (coloque no topo do arquivo se ainda não existirem)
@@ -9,190 +17,6 @@ import io, re, time
 import pdfplumber
 import pandas as pd
 import json
-
-EN_STOP = {
-    "the","a","an","of","and","or","to","for","with","in","on","as","is","are","was","were",
-    "this","that","these","those","by","from","at","be","been","it","its","their","they",
-    "we","our","you","your","not","no","yes","into","about","over","under","than","then",
-    "which","who","whom","whose","what","when","where","why","how"
-}
-
-def extract_text_from_pdf(file_bytes: bytes, max_pages: int | None = None) -> str:
-    text_chunks = []
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        pages = pdf.pages if max_pages is None else pdf.pages[:max_pages]
-        for p in pages:
-            try:
-                text_chunks.append(p.extract_text() or "")
-            except Exception:
-                pass
-    return "\n".join(text_chunks)
-
-def _normalize_tokens(s: str):
-    tokens = re.findall(r"[A-Za-z0-9]+", s.lower())
-    return [t for t in tokens if t not in EN_STOP and len(t) > 1]
-
-def _split_sentences(text: str):
-    # Simple English-centric sentence split
-    text = re.sub(r"\s+", " ", text)
-    sents = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text)
-    if len(sents) < 2:
-        sents = re.split(r"[.\n]", text)
-    return [s.strip() for s in sents if s and len(s.strip()) > 2]
-
-def _score(sentence: str, query: str) -> float:
-    s_tokens = set(_normalize_tokens(sentence))
-    q_tokens = set(_normalize_tokens(query))
-    if not s_tokens or not q_tokens:
-        return 0.0
-    return len(s_tokens & q_tokens) / len(s_tokens | q_tokens)
-
-def heuristic_answers(text: str, rqs: list[str]) -> list[str]:
-    """
-    Very simple heuristic baseline for English PDFs:
-    picks the sentence with the best token-overlap score per RQ;
-    if nothing matches, returns a snippet from the Abstract or beginning.
-    """
-    sentences = _split_sentences(text)
-    answers = []
-    lower = text.lower()
-    abs_pos = lower.find("abstract")
-    for rq in rqs:
-        rq = (rq or "").strip()
-        if not rq:
-            answers.append("")
-            continue
-        best_score, best_sent = 0.0, ""
-        for s in sentences:
-            sc = _score(s, rq)
-            if sc > best_score:
-                best_score, best_sent = sc, s
-        if best_score == 0.0:
-            snippet = text[abs_pos:abs_pos+300] if abs_pos != -1 else text[:300]
-            answers.append(snippet.strip())
-        else:
-            answers.append(best_sent)
-    return answers
-
-def run_extraction(modelo: str, full_text: str, rqs: list[str], examples: list[dict]) -> list[str]:
-    """
-    Route extraction by selected model.
-    All prompts assume ENGLISH inputs (PDF, research objective, RQs, answers).
-    Always returns a list of strings aligned with RQs length.
-    """
-    # Always ensure we return the right length
-    def _pad(lst: list[str], n: int) -> list[str]:
-        lst = [(x if isinstance(x, str) else str(x)) for x in (lst or [])]
-        if len(lst) < n: lst += [""] * (n - len(lst))
-        return lst[:n]
-
-    # 1) Heuristic baseline (English)
-    if modelo == "Heurístico (Regex)":
-        return _pad(heuristic_answers(full_text, rqs), len(rqs))
-
-    # Build few-shot examples (short)
-    def build_shots():
-        shots = []
-        for ex in examples:
-            if not ex.get("file_bytes"):
-                continue
-            ex_text = extract_text_from_pdf(ex["file_bytes"], max_pages=2)
-            pairs = []
-            for i, rq in enumerate(rqs, start=1):
-                rq_clean = (rq or "").strip()
-                if not rq_clean:
-                    continue
-                ans = ex["answers"][i-1] if i-1 < len(ex["answers"]) else ""
-                pairs.append({"rq": rq_clean, "answer": ans})
-            shots.append({"context": ex_text[:4000], "pairs": pairs})
-        return shots
-
-    # 2) OpenAI
-    if modelo == "OpenAI":
-        try:
-            import os, json
-            from openai import OpenAI
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-            system_msg = (
-                "You answer Software Engineering research questions from the text of a scientific article. "
-                "Return ONLY valid JSON: a list of strings, in the SAME ORDER as the input RQs. "
-                "When unsure, return an empty string. Do not fabricate facts."
-            )
-            user_payload = {
-                "instruction": "All content is in ENGLISH. Use the examples as weak supervision (few-shot).",
-                "rqs": rqs,
-                "examples": build_shots(),
-                "article_text": full_text[:12000]
-            }
-            resp = client.chat.completions.create(
-                model="gpt-4o-mini",
-                temperature=0.0,
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)}
-                ]
-            )
-            content = resp.choices[0].message.content
-            answers = json.loads(content)
-            if isinstance(answers, list):
-                return _pad(answers, len(rqs))
-        except Exception as e:
-            st.warning(f"OpenAI unavailable ({e}). Falling back to heuristic.")
-            return _pad(heuristic_answers(full_text, rqs), len(rqs))
-
-    # 3) Gemini
-    if modelo == "Gemini":
-        try:
-            import os, json, google.generativeai as genai
-            genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-            model = genai.GenerativeModel("gemini-1.5-flash")
-
-            prompt = (
-                "You answer Software Engineering research questions from the text of a scientific article.\n"
-                "Return ONLY valid JSON: a list of strings, in the SAME ORDER as the input RQs.\n"
-                "When unsure, return an empty string. Do not fabricate facts.\n\n"
-                f"RQs (English): {rqs}\n\n"
-                "Article text (English, may contain OCR noise):\n"
-                f"{full_text[:12000]}"
-            )
-            res = model.generate_content(prompt)
-            answers = json.loads(res.text)
-            if isinstance(answers, list):
-                return _pad(answers, len(rqs))
-        except Exception as e:
-            st.warning(f"Gemini unavailable ({e}). Falling back to heuristic.")
-            return _pad(heuristic_answers(full_text, rqs), len(rqs))
-
-    # 4) LLaMA (via Ollama local)
-    if modelo == "LLaMA":
-        try:
-            import json, requests
-            prompt = (
-                "You answer Software Engineering research questions from the text of a scientific article.\n"
-                "Return ONLY valid JSON: a list of strings, in the SAME ORDER as the input RQs.\n"
-                "When unsure, return an empty string. Do not fabricate facts.\n\n"
-                f"RQs (English): {rqs}\n\n"
-                "Article text (English, may contain OCR noise):\n"
-                f"{full_text[:8000]}"
-            )
-            resp = requests.post(
-                "http://localhost:11434/api/generate",
-                json={"model": "llama3", "prompt": prompt, "stream": False},
-                timeout=60
-            )
-            data = resp.json()
-            answers = json.loads(data.get("response", "[]"))
-            if isinstance(answers, list):
-                return _pad(answers, len(rqs))
-        except Exception as e:
-            st.warning(f"LLaMA (Ollama) unavailable ({e}). Falling back to heuristic.")
-            return _pad(heuristic_answers(full_text, rqs), len(rqs))
-
-    # Final fallback
-    return _pad(heuristic_answers(full_text, rqs), len(rqs))
-
-
 
 # ==============================
 # Configurações iniciais
@@ -300,11 +124,11 @@ st.markdown("---")
 col_a, col_b = st.columns(2)
 with col_a:
     if ready_for_examples:
-        if st.button("➡️ Ir para a etapa 2 — Exemplos", use_container_width=True):
+        if st.button("➡️ Ir para a etapa 2 — Exemplos", width='stretch'):
             st.session_state.stage = "step2"
             st.rerun()
     else:
-        st.button("➡️ Ir para a etapa 2 — Exemplos", disabled=True, use_container_width=True)
+        st.button("➡️ Ir para a etapa 2 — Exemplos", disabled=True, width='stretch')
 with col_b:
     st.caption("Preencha **objetivo** e pelo menos **1 RQ** para habilitar a próxima etapa.")
 
@@ -439,9 +263,9 @@ if st.session_state.stage == "step3":
 
         col1, col2, col3 = st.columns([1,1,2])
         with col1:
-            back_btn = st.button("⬅️ Voltar para Etapa 2", use_container_width=True)
+            back_btn = st.button("⬅️ Voltar para Etapa 2", width='stretch')
         with col2:
-            extract_btn = st.button("🔎 Extrair deste PDF", use_container_width=True, disabled=(f is None))
+            extract_btn = st.button("🔎 Extrair deste PDF", width='stretch', disabled=(f is None))
         with col3:
             st.caption(f"Modelo atual: **{modelo}**")
 
@@ -450,11 +274,12 @@ if st.session_state.stage == "step3":
             st.rerun()
 
         if extract_btn and f is not None:
-            with st.spinner("Extraindo texto do PDF..."):
+            with st.spinner("Extracting text from PDF..."):
                 text = extract_text_from_pdf(f.getvalue())
 
-            with st.spinner(f"Gerando respostas com modelo **{modelo}**..."):
-                answers = run_extraction(modelo, text, st.session_state.rqs, st.session_state.examples)
+            with st.spinner(f"Answering RQs with **{modelo}**..."):
+                extractor = make_extractor(modelo, rqs=st.session_state.rqs, examples=st.session_state.examples)
+                answers = extractor.extract(text)
 
             # Monta linha de resultado
             import time
@@ -470,7 +295,7 @@ if st.session_state.stage == "step3":
                 "RQ": [f"RQ{i+1}: {rq}" for i, rq in enumerate(st.session_state.rqs)],
                 "Answer": [answers[i] if i < len(answers) else "" for i in range(len(st.session_state.rqs))]
             })
-            st.dataframe(res_df, use_container_width=True)
+            st.dataframe(res_df, width='stretch')
 
             # JSON desta extração (útil para copiar/baixar)
             single_result = {
@@ -485,7 +310,7 @@ if st.session_state.stage == "step3":
                 data=json.dumps(single_result, ensure_ascii=False, indent=2).encode("utf-8"),
                 file_name=f"extraction_{int(time.time())}.json",
                 mime="application/json",
-                use_container_width=True
+                width='stretch'
             )
 
             # (Opcional) Mostrar um trecho do texto do artigo para referência rápida
@@ -508,7 +333,7 @@ if st.session_state.stage == "step3":
         st.subheader("📊 Resultados acumulados")
         import pandas as pd
         df = pd.DataFrame(st.session_state.extracted_rows)
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width='stretch')
 
         # Download CSV
         csv_bytes = df.to_csv(index=False).encode("utf-8")
@@ -517,7 +342,7 @@ if st.session_state.stage == "step3":
             data=csv_bytes,
             file_name="extracoes.csv",
             mime="text/csv",
-            use_container_width=True
+            width='stretch'
         )
 
         # Limpar tabela
