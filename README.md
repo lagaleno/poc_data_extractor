@@ -27,9 +27,13 @@ python -m venv venv
 
 Ativar o ambiente virtual:
 
-- **Git Bash / Linux / MacOS**
+- **Git Bash / Linux **
   ```bash
   source venv/Scripts/activate
+  ```
+- **macOS **
+  ```bash
+  source venv/bin/activate
   ```
 - **Prompt de Comando (cmd – Windows)**
   ```cmd
@@ -55,6 +59,11 @@ pip install -r requirements.txt
 ### 5. Rodar a aplicação
 ```bash
 streamlit run app/streamlit_app.py
+```
+
+- **Em caso de erro no macOS:**
+```bash
+python3 -m streamlit run app/streamlit_app.py
 ```
 
 A interface abrirá automaticamente no navegador em:  
