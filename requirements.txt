@@ -3,3 +3,6 @@ pandas
 pdfplumber
 gspread
 python-dotenv
+openai>=1.40.0
+google-generativeai>=0.7.2
+

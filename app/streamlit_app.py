@@ -45,7 +45,7 @@ if "examples" not in st.session_state:
 st.sidebar.header("⚙️ Configurações")
 modelo = st.sidebar.selectbox(
     "Selecione o modelo de IA",
-    ["OpenAI", "LLaMA", "Gemini", "Heurístico (Regex)"],
+    ["OpenAI", "Gemini", "Heurístico (Regex)"],
     index=0
 )
 

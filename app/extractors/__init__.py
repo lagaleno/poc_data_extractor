@@ -4,20 +4,42 @@ from .base import ExtractorBase
 from .heuristic import HeuristicExtractor
 
 def make_extractor(modelo_ui: str, rqs: List[str], examples: List[Dict]) -> ExtractorBase:
-    """
-    modelo_ui: o texto vindo do selectbox ("OpenAI", "LLaMA", "Gemini", "Heurístico (Regex)")
-    Por enquanto implementamos OpenAI e Heurístico; LLaMA/Gemini poderiam ser adicionados depois.
-    """
     name = (modelo_ui or "").strip().lower()
+
     if "openai" in name:
         try:
             from .openai_extractor import OpenAIExtractor
             return OpenAIExtractor(rqs=rqs, examples=examples)
         except Exception as e:
-            # fallback se faltar lib/chave
-            import streamlit as st
-            st.warning(f"OpenAI extractor unavailable ({e}). Falling back to heuristic.")
+            try:
+                import streamlit as st
+                st.warning(f"OpenAI extractor unavailable ({e}). Falling back to heuristic.")
+            except Exception:
+                pass
             return HeuristicExtractor(rqs=rqs, examples=examples)
 
-    # TODO: adicionar GeminiExtractor / LLaMAExtractor futuramente
+    if "gemini" in name:
+        try:
+            from .gemini_extractor import GeminiExtractor
+            return GeminiExtractor(rqs=rqs, examples=examples)
+        except Exception as e:
+            try:
+                import streamlit as st
+                st.warning(f"Gemini extractor unavailable ({e}). Falling back to heuristic.")
+            except Exception:
+                pass
+            return HeuristicExtractor(rqs=rqs, examples=examples)
+
+
+        try:
+            from .llama_extractor import LLaMAExtractor
+            return LLaMAExtractor(rqs=rqs, examples=examples)
+        except Exception as e:
+            try:
+                import streamlit as st
+                st.warning(f"LLaMA extractor unavailable ({e}). Falling back to heuristic.")
+            except Exception:
+                pass
+            return HeuristicExtractor(rqs=rqs, examples=examples)
+
     return HeuristicExtractor(rqs=rqs, examples=examples)
