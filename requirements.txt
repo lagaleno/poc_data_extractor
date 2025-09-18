@@ -5,4 +5,7 @@ gspread
 python-dotenv
 openai>=1.40.0
 google-generativeai>=0.7.2
-
+nltk>=3.8
+scikit-learn>=1.4
+sentence-transformers>=2.7
+torch>=2.2  
